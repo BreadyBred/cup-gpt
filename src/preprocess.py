@@ -124,7 +124,6 @@ FEATURE_COLUMNS = [
     "is_world_cup", "is_qualifier", "is_friendly",
     "is_neutral",
     "home_confederation", "away_confederation",
-    "stage",
 ]
 
 
@@ -177,7 +176,6 @@ class FeatureEngine:
         away: str,
         tournament: str,
         neutral: bool,
-        stage: int = 0,
     ) -> dict:
         h_elo = self.elo[home]
         a_elo = self.elo[away]
@@ -202,7 +200,6 @@ class FeatureEngine:
             "is_neutral": int(neutral),
             "home_confederation": self._conf_code(home),
             "away_confederation": self._conf_code(away),
-            "stage": stage,
         }
 
     # ── state update ──────────────────────────────────────────────────────
@@ -281,23 +278,19 @@ class FeatureEngine:
         self,
         home: str,
         away: str,
-        stage: str = "group",
         neutral: bool = True,
     ) -> dict:
         """Build a feature dict for a single upcoming match (no DataFrame overhead)."""
-        stage_code = STAGE_ENCODING.get(stage, 0)
-        return self._compute_features(home, away, "FIFA World Cup", neutral, stage_code)
+        return self._compute_features(home, away, "FIFA World Cup", neutral)
 
     def predict_features(
         self,
         home: str,
         away: str,
-        stage: str = "group",
         neutral: bool = True,
     ) -> pd.DataFrame:
         """Build a feature row for a single upcoming match (no state update)."""
-        stage_code = STAGE_ENCODING.get(stage, 0)
-        feat = self._compute_features(home, away, "FIFA World Cup", neutral, stage_code)
+        feat = self._compute_features(home, away, "FIFA World Cup", neutral)
         return pd.DataFrame([feat], columns=FEATURE_COLUMNS)
 
 

@@ -12,7 +12,7 @@ import xgboost as xgb
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from preprocess import FEATURE_COLUMNS, STAGE_ENCODING, FeatureEngine, load_and_preprocess
+from preprocess import FEATURE_COLUMNS, FeatureEngine, load_and_preprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = ROOT / "models" / "xgb_model.json"
@@ -63,25 +63,23 @@ SF_FLOW = [(0, 1), (2, 3)]
 
 def precompute(engine: FeatureEngine, model) -> dict:
     all_teams = sorted({t for g in GROUPS.values() for t in g})
-    stages = ["group", "R32", "R16", "QF", "SF", "Final", "3rd"]
     pairs = list(combinations(all_teams, 2))
 
     rows, keys = [], []
-    for stage in stages:
-        for ta, tb in pairs:
-            rows.append(engine.match_features_dict(ta, tb, stage, True))
-            keys.append((ta, tb, stage))
+    for ta, tb in pairs:
+        rows.append(engine.match_features_dict(ta, tb, True))
+        keys.append((ta, tb))
 
     X = pd.DataFrame(rows, columns=FEATURE_COLUMNS)
     probas = model.predict_proba(X)
     return dict(zip(keys, probas))
 
 
-def mp(cache, ta, tb, stage):
+def mp(cache, ta, tb):
     """Look up (P_ta_win, P_draw, P_tb_win), handling team order."""
     if ta <= tb:
-        return cache[(ta, tb, stage)]
-    p = cache[(tb, ta, stage)]
+        return cache[(ta, tb)]
+    p = cache[(tb, ta)]
     return np.array([p[2], p[1], p[0]])
 
 
@@ -105,7 +103,7 @@ def _sim_groups(cache, rng):
     for g, teams in GROUPS.items():
         pts, gd, gs = defaultdict(int), defaultdict(int), defaultdict(int)
         for ta, tb in combinations(teams, 2):
-            p = mp(cache, ta, tb, "group")
+            p = mp(cache, ta, tb)
             r = rng.random()
             if r < p[0]:
                 out = 0
@@ -145,37 +143,34 @@ def _best_thirds(standings):
 
 
 def _assign_thirds(qualifying):
-    """Map 8 best third-placed teams to R32 slots via constraint satisfaction."""
-    slots = [
-        (74, "ABCDF"), (77, "CDFGH"), (79, "CEFHI"), (80, "EHIJK"),
-        (81, "BEFIJ"), (82, "AEHIJ"), (85, "EFGIJ"), (87, "DEIJL"),
+    """Map 8 best third-placed teams to R32 slots via backtracking search."""
+    slot_data = [
+        (74, set("ABCDF")), (77, set("CDFGH")), (79, set("CEFHI")),
+        (80, set("EHIJK")), (81, set("BEFIJ")), (82, set("AEHIJ")),
+        (85, set("EFGIJ")), (87, set("DEIJL")),
     ]
     by_group = {t["group"]: t["team"] for t in qualifying}
-    remaining = {t["group"] for t in qualifying}
-    assignment = {}
+    q_groups = set(by_group.keys())
 
-    for _ in range(8):
-        best_mid, best_avail, mn = None, None, 99
-        for mid, elig in slots:
-            if mid in assignment:
-                continue
-            avail = set(elig) & remaining
-            if len(avail) < mn:
-                mn = len(avail)
-                best_mid = mid
-                best_avail = avail
-        if not best_avail:
-            break
-        chosen = sorted(best_avail)[0]
-        assignment[best_mid] = by_group[chosen]
-        remaining.remove(chosen)
+    slots = sorted(slot_data, key=lambda s: len(s[1] & q_groups))
 
-    return assignment
+    def solve(idx, remaining):
+        if idx == len(slots):
+            return {}
+        mid, eligible = slots[idx]
+        for group in sorted(eligible & remaining):
+            result = solve(idx + 1, remaining - {group})
+            if result is not None:
+                result[mid] = by_group[group]
+                return result
+        return None
+
+    return solve(0, q_groups) or {}
 
 
-def _ko(cache, rng, ta, tb, stage):
+def _ko(cache, rng, ta, tb):
     """Simulate a knockout match — draws resolved as 50/50 advancement."""
-    p = mp(cache, ta, tb, stage)
+    p = mp(cache, ta, tb)
     p_a = p[0] + p[1] * 0.5
     return ta if rng.random() < p_a else tb
 
@@ -217,14 +212,20 @@ def simulate(engine, model, n=N_ITER):
         # ── R32 ──
         tm = _assign_thirds(bt)
 
+        if len(tm) != 8:
+            print("Third-place assignment failed!")
+            print("Best thirds:", [t["group"] for t in bt])
+            print("Assignment:", tm)
+            raise RuntimeError("Could not assign all third-place teams")
+
         def pos(code):
             return w[code[1]] if code[0] == "1" else ru[code[1]]
 
         r32w = {}
         for mid, (pa, pb) in R32_FIXED.items():
-            r32w[mid] = _ko(cache, rng, pos(pa), pos(pb), "R32")
+            r32w[mid] = _ko(cache, rng, pos(pa), pos(pb))
         for mid, (wp, _) in R32_THIRD.items():
-            r32w[mid] = _ko(cache, rng, pos(wp), tm[mid], "R32")
+            r32w[mid] = _ko(cache, rng, pos(wp), tm[mid])
 
         r32_adv = set(r32w.values())
         for t in qualified:
@@ -234,12 +235,12 @@ def simulate(engine, model, n=N_ITER):
         # ── R16 ──
         r16w = {}
         for idx, (ma, mb) in enumerate(R16_FLOW):
-            r16w[idx] = _ko(cache, rng, r32w[ma], r32w[mb], "R16")
+            r16w[idx] = _ko(cache, rng, r32w[ma], r32w[mb])
 
         # ── QF ──
         qfw = {}
         for idx, (a, b) in enumerate(QF_FLOW):
-            winner = _ko(cache, rng, r16w[a], r16w[b], "QF")
+            winner = _ko(cache, rng, r16w[a], r16w[b])
             loser = r16w[b] if winner == r16w[a] else r16w[a]
             qfw[idx] = winner
             cnt[loser]["qf"] += 1
@@ -248,14 +249,14 @@ def simulate(engine, model, n=N_ITER):
         sfw = {}
         sf_losers = []
         for idx, (a, b) in enumerate(SF_FLOW):
-            winner = _ko(cache, rng, qfw[a], qfw[b], "SF")
+            winner = _ko(cache, rng, qfw[a], qfw[b])
             loser = qfw[b] if winner == qfw[a] else qfw[a]
             sfw[idx] = winner
             sf_losers.append(loser)
             cnt[loser]["sf"] += 1
 
         # ── Final ──
-        champ = _ko(cache, rng, sfw[0], sfw[1], "Final")
+        champ = _ko(cache, rng, sfw[0], sfw[1])
         runner = sfw[1] if champ == sfw[0] else sfw[0]
         cnt[champ]["win"] += 1
         cnt[runner]["fin"] += 1

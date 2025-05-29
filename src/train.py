@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import accuracy_score, log_loss, confusion_matrix
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 
@@ -33,6 +33,8 @@ def train() -> None:
 
     engine = FeatureEngine()
     X, y = engine.build_training_data(df)
+    print(pd.Series(y).value_counts(normalize=True))
+    print(pd.Series(y).value_counts())
 
     if X.shape[0] == 0:
         print("Error: no valid training samples")
@@ -49,11 +51,12 @@ def train() -> None:
     print(f"Train: {len(X_train)} samples  |  Test: {len(X_test)} samples")
 
     model = xgb.XGBClassifier(
-        n_estimators=300,
-        max_depth=6,
-        learning_rate=0.05,
+        n_estimators=1000,
+        max_depth=4,
+        learning_rate=0.02,
         subsample=0.8,
         colsample_bytree=0.8,
+        min_child_weight=5,
         random_state=42,
     )
     model.fit(
@@ -61,6 +64,15 @@ def train() -> None:
         eval_set=[(X_test, y_test)],
         verbose=False,
     )
+
+    print("\nTop features:")
+
+    for name, score in sorted(
+        zip(FEATURE_COLUMNS, model.feature_importances_),
+        key=lambda x: x[1],
+        reverse=True,
+    ):
+        print(f"{name:<35} {score:.4f}")
 
     y_pred = model.predict(X_test)
     y_proba = model.predict_proba(X_test)
@@ -70,6 +82,9 @@ def train() -> None:
 
     print(f"Test accuracy : {acc:.4f}")
     print(f"Test log-loss : {ll:.4f}")
+
+    print("\nConfusion matrix:")
+    print(confusion_matrix(y_test, y_pred))
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     model.save_model(str(MODEL_PATH))
