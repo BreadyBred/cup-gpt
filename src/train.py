@@ -32,7 +32,7 @@ def train() -> None:
     print(f"Loaded {len(df)} matches")
 
     engine = FeatureEngine()
-    X, y = engine.build_training_data(df)
+    X, y = engine.build_training_data(df, min_date="2000-01-01")
     print(pd.Series(y).value_counts(normalize=True))
     print(pd.Series(y).value_counts())
 

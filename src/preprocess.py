@@ -117,6 +117,7 @@ STAGE_ENCODING = {
 
 FEATURE_COLUMNS = [
     "home_elo", "away_elo", "elo_diff",
+    "home_elo_momentum", "away_elo_momentum",
     "h2h_win_rate",
     "home_form", "away_form",
     "home_goals_scored", "home_goals_conceded",
@@ -132,6 +133,7 @@ class FeatureEngine:
 
     def __init__(self):
         self.elo: dict[str, float] = defaultdict(lambda: 1500.0)
+        self.elo_history: dict[str, list[float]] = defaultdict(list)
         self.matches: dict[str, list[dict]] = defaultdict(list)
         self.h2h: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
@@ -158,6 +160,14 @@ class FeatureEngine:
         if not recent:
             return 0.0
         return sum(m["ga"] for m in recent) / len(recent)
+
+    def _elo_momentum(self, team: str, n: int = 10) -> float:
+        """Elo change over last n matches. Positive = team improving."""
+        hist = self.elo_history[team]
+        if len(hist) < 2:
+            return 0.0
+        start = hist[-min(n, len(hist))]
+        return self.elo[team] - start
 
     def _h2h_rate(self, team_a: str, team_b: str, n: int = 10) -> float:
         key = tuple(sorted([team_a, team_b]))
@@ -187,6 +197,8 @@ class FeatureEngine:
             "home_elo": h_elo,
             "away_elo": a_elo,
             "elo_diff": h_elo - a_elo,
+            "home_elo_momentum": self._elo_momentum(home),
+            "away_elo_momentum": self._elo_momentum(away),
             "h2h_win_rate": self._h2h_rate(home, away),
             "home_form": self._form(home),
             "away_form": self._form(away),
@@ -219,11 +231,18 @@ class FeatureEngine:
         else:
             h_pts, a_pts, winner = 0.5, 0.5, None
 
-        k = 30 if tournament == "FIFA World Cup" else 20
+        # Goal-margin adjusted K (larger wins → bigger Elo swing)
+        base_k = 30 if tournament == "FIFA World Cup" else 20
+        margin = abs(home_score - away_score)
+        k = base_k * (1.0 + 0.5 * np.log1p(margin))
+
         exp_h = 1.0 / (1.0 + 10.0 ** ((self.elo[away] - self.elo[home]) / 400.0))
         exp_a = 1.0 - exp_h
         self.elo[home] += k * (h_pts - exp_h)
         self.elo[away] += k * (a_pts - exp_a)
+
+        self.elo_history[home].append(self.elo[home])
+        self.elo_history[away].append(self.elo[away])
 
         self.matches[home].append({"gf": home_score, "ga": away_score, "pts": h_pts})
         self.matches[away].append({"gf": away_score, "ga": home_score, "pts": a_pts})
@@ -233,8 +252,16 @@ class FeatureEngine:
 
     # ── public API ────────────────────────────────────────────────────────
 
-    def build_training_data(self, df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
-        """Walk through all matches chronologically and produce (X, y)."""
+    def build_training_data(
+        self, df: pd.DataFrame, min_date: str | None = None,
+    ) -> tuple[pd.DataFrame, np.ndarray]:
+        """Walk through all matches chronologically and produce (X, y).
+
+        Elo and state are always updated for every match, but only matches
+        on or after *min_date* (e.g. "2000-01-01") are included in the
+        returned training set.  This lets Elo warm up on old data while
+        keeping the training distribution modern.
+        """
         df = df.sort_values("date").reset_index(drop=True)
 
         features: list[dict] = []
@@ -258,15 +285,21 @@ class FeatureEngine:
                 neutral = neutral.strip().upper() == "TRUE"
 
             feat = self._compute_features(home, away, tournament, neutral)
-            features.append(feat)
 
+            # Determine label
             if h_score > a_score:
-                labels.append(0)
+                label = 0
             elif h_score == a_score:
-                labels.append(1)
+                label = 1
             else:
-                labels.append(2)
+                label = 2
 
+            # Include in training set only if after cutoff
+            if min_date is None or row["date"] >= min_date:
+                features.append(feat)
+                labels.append(label)
+
+            # Always update state so Elo warms up on full history
             self._update(home, away, h_score, a_score, tournament)
 
         X = pd.DataFrame(features, columns=FEATURE_COLUMNS)
