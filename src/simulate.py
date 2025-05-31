@@ -185,6 +185,7 @@ def simulate(engine, model, n=N_ITER):
     print(f"  {len(cache):,} entries cached")
 
     cnt = {t: defaultdict(int) for t in all_teams}
+    gp = {g: {t: [0, 0, 0, 0] for t in teams} for g, teams in GROUPS.items()}
     rng = np.random.default_rng(42)
 
     print(f"Running {n:,} iterations...")
@@ -194,6 +195,9 @@ def simulate(engine, model, n=N_ITER):
 
         # ── group stage ──
         st = _sim_groups(cache, rng)
+        for g, ranks in st.items():
+            for pos, entry in enumerate(ranks):
+                gp[g][entry["team"]][pos] += 1
         w = {g: r[0]["team"] for g, r in st.items()}
         ru = {g: r[1]["team"] for g, r in st.items()}
 
@@ -286,7 +290,96 @@ def simulate(engine, model, n=N_ITER):
             f"   Final {r['final_pct']:5.1f}%   SF {r['sf_pct']:5.1f}%"
         )
 
-    return results
+    # ── group standings from MC ──
+    group_standings = {}
+    for g in GROUPS:
+        st_list = []
+        for t in GROUPS[g]:
+            st_list.append({
+                "team": t,
+                "1st_pct": round(gp[g][t][0] / n * 100, 1),
+                "2nd_pct": round(gp[g][t][1] / n * 100, 1),
+                "3rd_pct": round(gp[g][t][2] / n * 100, 1),
+                "4th_pct": round(gp[g][t][3] / n * 100, 1),
+            })
+        st_list.sort(key=lambda x: x["1st_pct"], reverse=True)
+        group_standings[g] = st_list
+
+    # ── most-likely bracket ──
+    bracket = _build_predicted_bracket(gp, cache, results, n)
+
+    return results, group_standings, bracket
+
+
+# ── predicted bracket builder ────────────────────────────────────────────────
+
+def _build_predicted_bracket(gp, cache, results, n):
+    """Build the single most-likely bracket path from MC group data + model."""
+    by_team = {r["team"]: r for r in results}
+
+    # Most likely group order: 1st by max-1st-count, 2nd by max-2nd among rest, etc.
+    pred_w, pred_ru, pred_3rd = {}, {}, {}
+    third_info = []
+
+    for g in GROUPS:
+        pool = list(GROUPS[g])
+        first = max(pool, key=lambda t: gp[g][t][0])
+        pool.remove(first)
+        second = max(pool, key=lambda t: gp[g][t][1])
+        pool.remove(second)
+        third = max(pool, key=lambda t: gp[g][t][2])
+        pred_w[g] = first
+        pred_ru[g] = second
+        pred_3rd[g] = third
+        third_info.append((g, third, by_team[third]["group_exit_pct"]))
+
+    # Best 8 thirds: lowest group-exit rate
+    third_info.sort(key=lambda x: x[2])
+    qual_thirds = [{"group": g, "team": t, "pts": 0, "gd": 0, "gs": 0}
+                   for g, t, _ in third_info[:8]]
+    third_map = _assign_thirds(qual_thirds)
+
+    def pos(code):
+        return pred_w[code[1]] if code[0] == "1" else pred_ru[code[1]]
+
+    def match(ta, tb):
+        p = mp(cache, ta, tb)
+        pa = float(p[0] + p[1] * 0.5)
+        winner = ta if pa >= 0.5 else tb
+        return {"a": ta, "b": tb, "a_pct": round(pa * 100, 1), "winner": winner}
+
+    # R32
+    r32 = {}
+    for mid, (pa, pb) in R32_FIXED.items():
+        r32[mid] = match(pos(pa), pos(pb))
+    for mid, (wp, _) in R32_THIRD.items():
+        r32[mid] = match(pos(wp), third_map[mid])
+
+    # R16
+    r16 = {}
+    for idx, (ma, mb) in enumerate(R16_FLOW):
+        r16[idx] = match(r32[ma]["winner"], r32[mb]["winner"])
+
+    # QF
+    qf = {}
+    for idx, (a, b) in enumerate(QF_FLOW):
+        qf[idx] = match(r16[a]["winner"], r16[b]["winner"])
+
+    # SF
+    sf = {}
+    for idx, (a, b) in enumerate(SF_FLOW):
+        sf[idx] = match(qf[a]["winner"], qf[b]["winner"])
+
+    # Final
+    final = match(sf[0]["winner"], sf[1]["winner"])
+
+    # Serialise in match-number order
+    r32_list = [r32[mid] for mid in sorted(r32)]
+    r16_list = [r16[i] for i in range(len(r16))]
+    qf_list = [qf[i] for i in range(len(qf))]
+    sf_list = [sf[i] for i in range(len(sf))]
+
+    return {"r32": r32_list, "r16": r16_list, "qf": qf_list, "sf": sf_list, "final": final}
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
@@ -300,7 +393,7 @@ def run():
     model.load_model(str(MODEL_PATH))
 
     _, _, engine = load_and_preprocess()
-    results = simulate(engine, model)
+    results, group_standings, bracket = simulate(engine, model)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUTPUT_DIR / "simulation_results.json"
@@ -308,6 +401,8 @@ def run():
         "n_iterations": N_ITER,
         "groups": {g: list(teams) for g, teams in GROUPS.items()},
         "results": results,
+        "group_standings": group_standings,
+        "bracket": bracket,
     }
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nResults saved to {out}")

@@ -38,6 +38,8 @@ def load_results():
         sys.exit(1)
 
 
+# ── analysis prose ───────────────────────────────────────────────────────────
+
 def _build_analysis(results, groups):
     sr = sorted(results, key=lambda x: -x["win_pct"])
     top3 = sr[:3]
@@ -127,6 +129,97 @@ def _build_analysis(results, groups):
     return "\n".join(f"<p>{p}</p>" for p in paras)
 
 
+# ── group standings ──────────────────────────────────────────────────────────
+
+def _build_groups(group_standings, results):
+    by_team = {r["team"]: r for r in results}
+    cards = []
+    for g in sorted(group_standings.keys()):
+        rows = []
+        st = group_standings[g]
+        # Sort by advance probability (100 - group_exit_pct)
+        for s in st:
+            s["adv"] = round(100 - by_team[s["team"]]["group_exit_pct"], 1)
+        st.sort(key=lambda x: -x["adv"])
+
+        for i, s in enumerate(st):
+            cls = "qual" if i < 2 else ("third" if i == 2 else "out")
+            rows.append(
+                f'<div class="grp-row {cls}">'
+                f'<span class="grp-pos">{i + 1}</span>'
+                f'<span class="grp-team">{s["team"]}</span>'
+                f'<span class="grp-pct">{s["adv"]:.0f}%</span>'
+                f'</div>'
+            )
+        cards.append(
+            f'<div class="grp"><div class="grp-hd">Group {g}</div>{"".join(rows)}</div>'
+        )
+    return '<div class="groups-grid">' + "".join(cards) + '</div>'
+
+
+# ── bracket ──────────────────────────────────────────────────────────────────
+
+def _match_card(m):
+    """Render one knockout match card."""
+    a_win = m["winner"] == m["a"]
+    a_cls = " winner" if a_win else ""
+    b_cls = "" if a_win else " winner"
+    a_pct = m["a_pct"]
+    b_pct = round(100 - a_pct, 1)
+    return (
+        f'<div class="match">'
+        f'<div class="tm{a_cls}"><span class="tn">{m["a"]}</span>'
+        f'<span class="tp">{a_pct:.0f}%</span></div>'
+        f'<div class="tm{b_cls}"><span class="tn">{m["b"]}</span>'
+        f'<span class="tp">{b_pct:.0f}%</span></div>'
+        f'</div>'
+    )
+
+
+def _build_bracket(bracket):
+    sections = []
+
+    sections.append('<h3>Round of 32</h3><div class="bracket-grid r32">')
+    for m in bracket["r32"]:
+        sections.append(_match_card(m))
+    sections.append('</div>')
+
+    sections.append('<h3>Round of 16</h3><div class="bracket-grid r16">')
+    for m in bracket["r16"]:
+        sections.append(_match_card(m))
+    sections.append('</div>')
+
+    sections.append('<h3>Quarterfinals</h3><div class="bracket-grid qf">')
+    for m in bracket["qf"]:
+        sections.append(_match_card(m))
+    sections.append('</div>')
+
+    sections.append('<h3>Semifinals</h3><div class="bracket-grid sf">')
+    for m in bracket["sf"]:
+        sections.append(_match_card(m))
+    sections.append('</div>')
+
+    f = bracket["final"]
+    a_win = f["winner"] == f["a"]
+    a_cls = " winner" if a_win else ""
+    b_cls = "" if a_win else " winner"
+    b_pct = round(100 - f["a_pct"], 1)
+    sections.append(
+        '<h3>Final</h3><div class="final-match">'
+        f'<div class="fm-team{a_cls}"><div class="fm-name">{f["a"]}</div>'
+        f'<div class="fm-pct">{f["a_pct"]:.0f}%</div></div>'
+        f'<div class="fm-vs">vs</div>'
+        f'<div class="fm-team{b_cls}"><div class="fm-name">{f["b"]}</div>'
+        f'<div class="fm-pct">{b_pct:.0f}%</div></div>'
+        f'</div>'
+        f'<div class="champion">Predicted Champion: <strong>{f["winner"]}</strong></div>'
+    )
+
+    return "\n".join(sections)
+
+
+# ── full-results table ───────────────────────────────────────────────────────
+
 def _build_table(results):
     rows = []
     for r in results:
@@ -144,6 +237,8 @@ def _build_table(results):
     return "\n".join(rows)
 
 
+# ── styles ───────────────────────────────────────────────────────────────────
+
 CSS = """
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -151,10 +246,51 @@ background:#0f0f1a;color:#e0e0e0;line-height:1.6;padding:2rem;max-width:1200px;m
 h1{font-size:2.2rem;color:#e6a817;text-align:center;margin-bottom:.3rem}
 .sub{text-align:center;color:#808099;margin-bottom:2rem;font-size:.95rem}
 h2{font-size:1.3rem;color:#e6a817;margin:2rem 0 1rem;border-bottom:1px solid #2a2a4a;padding-bottom:.4rem}
+h3{font-size:1.1rem;color:#c0c0d0;margin:1.5rem 0 .75rem}
 section{background:#1a1a2e;border-radius:12px;padding:1.5rem 2rem;margin-bottom:1.5rem}
 p{margin-bottom:1rem;color:#c0c0d0}
 strong{color:#e6a817}
+
+/* groups */
+.groups-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}
+@media(max-width:900px){.groups-grid{grid-template-columns:repeat(2,1fr)}}
+.grp{background:#16213e;border-radius:8px;padding:.75rem 1rem}
+.grp-hd{color:#e6a817;font-weight:700;font-size:.95rem;margin-bottom:.4rem}
+.grp-row{display:flex;align-items:center;padding:.25rem 0;font-size:.85rem}
+.grp-pos{width:1.2rem;color:#808099;font-weight:600}
+.grp-team{flex:1}
+.grp-pct{color:#808099;font-size:.8rem;min-width:2.5rem;text-align:right}
+.grp-row.qual .grp-team{color:#4ade80}
+.grp-row.third .grp-team{color:#facc15}
+.grp-row.out{opacity:.45}
+
+/* bracket */
+.bracket-grid{display:grid;gap:.6rem}
+.r32{grid-template-columns:repeat(4,1fr)}
+.r16{grid-template-columns:repeat(4,1fr)}
+.qf{grid-template-columns:repeat(2,1fr)}
+.sf{grid-template-columns:repeat(2,1fr)}
+@media(max-width:700px){.r32,.r16{grid-template-columns:repeat(2,1fr)}}
+.match{background:#16213e;border-radius:8px;padding:.5rem .75rem;border-left:3px solid #2a2a4a}
+.tm{display:flex;justify-content:space-between;padding:.2rem 0;font-size:.85rem}
+.tm.winner .tn{color:#e6a817;font-weight:600}
+.tn{flex:1}.tp{color:#808099;font-size:.8rem;min-width:2.5rem;text-align:right}
+
+/* final */
+.final-match{display:flex;align-items:center;justify-content:center;gap:1.5rem;
+padding:1.5rem;background:#16213e;border-radius:12px;max-width:500px;margin:0 auto}
+.fm-team{text-align:center;flex:1}
+.fm-name{font-size:1.15rem;font-weight:600;color:#c0c0d0}
+.fm-team.winner .fm-name{color:#e6a817;font-size:1.3rem}
+.fm-pct{font-size:.9rem;color:#808099;margin-top:.2rem}
+.fm-vs{color:#555;font-size:.9rem;font-weight:600}
+.champion{text-align:center;margin-top:1rem;font-size:1.1rem;color:#c0c0d0}
+.champion strong{font-size:1.25rem}
+
+/* charts */
 .chart-box{position:relative;height:480px;margin:1rem 0}
+
+/* table */
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:.9rem}
 th{background:#0d1b2a;padding:.7rem 1rem;text-align:left;cursor:pointer;
@@ -185,13 +321,19 @@ function sortTbl(c){
 """
 
 
+# ── assemble ─────────────────────────────────────────────────────────────────
+
 def generate_report():
     data = load_results()
     results = data["results"]
     groups = data["groups"]
     n_iter = data["n_iterations"]
+    group_standings = data.get("group_standings", {})
+    bracket = data.get("bracket", {})
 
     analysis = _build_analysis(results, groups)
+    groups_html = _build_groups(group_standings, results) if group_standings else ""
+    bracket_html = _build_bracket(bracket) if bracket else ""
     table_rows = _build_table(results)
 
     top16 = results[:16]
@@ -242,11 +384,30 @@ def generate_report():
         '<header>\n<h1>Cup-GPT</h1>\n'
         f'<p class="sub">World Cup 2026 Monte Carlo Predictions &mdash; {n_iter:,} simulations</p>\n'
         '</header>\n'
+        # Analysis
         '<section>\n<h2>Tournament Analysis</h2>\n' + analysis + '\n</section>\n'
-        '<section>\n<h2>Win Probability &mdash; Top 16</h2>\n'
+        # Group standings
+        + ('<section>\n<h2>Predicted Group Standings</h2>\n'
+           '<p style="font-size:.85rem;color:#808099">'
+           'Advance probability (%) — '
+           '<span style="color:#4ade80">● Qualified</span> '
+           '<span style="color:#facc15">● 3rd (best-of)</span> '
+           '<span style="opacity:.45">● Eliminated</span>'
+           '</p>\n'
+           + groups_html + '\n</section>\n' if groups_html else '')
+        # Bracket
+        + ('<section>\n<h2>Predicted Bracket</h2>\n'
+           '<p style="font-size:.85rem;color:#808099">'
+           'Most likely path based on group projections and model win probabilities. '
+           '<span style="color:#e6a817">Highlighted</span> = predicted winner.'
+           '</p>\n'
+           + bracket_html + '\n</section>\n' if bracket_html else '')
+        # Charts
+        + '<section>\n<h2>Win Probability &mdash; Top 16</h2>\n'
         '<div class="chart-box"><canvas id="wc"></canvas></div>\n</section>\n'
         '<section>\n<h2>Semifinal Probability &mdash; Top 16</h2>\n'
         '<div class="chart-box"><canvas id="sc"></canvas></div>\n</section>\n'
+        # Table
         '<section>\n<h2>All 48 Teams</h2>\n'
         '<div class="tbl-wrap">\n<table id="tbl">\n'
         '<thead>' + th_row + '</thead>\n'
